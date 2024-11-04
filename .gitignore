@@ -165,7 +165,7 @@ cython_debug/
 
 #data
 data/
-
+cached_TL_family_housing and social/
 ### Python Patch ###
 # Poetry local configuration file - https://python-poetry.org/docs/configuration/#local-configuration
 poetry.toml
