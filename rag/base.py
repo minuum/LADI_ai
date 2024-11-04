@@ -11,17 +11,192 @@ from abc import ABC, abstractmethod
 from operator import itemgetter
 from langchain.schema import Document
 from tqdm import tqdm
-from typing import List, Optional
+from typing import List, Optional, Union
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
 
+from typing import Any, Callable, Dict, Iterable, List, Optional
+from operator import itemgetter
+import numpy as np
+import pickle
+import os
+
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from langchain_core.pydantic_v1 import Field
+from langchain_core.retrievers import BaseRetriever
+
+try:
+    from kiwipiepy import Kiwi
+except ImportError:
+    raise ImportError(
+        "Could not import kiwipiepy, please install with `pip install kiwipiepy`."
+    )
+
+kiwi_tokenizer = Kiwi()
+
+def kiwi_preprocessing_func(text: Union[str, List[str]]) -> List[str]:
+    if isinstance(text, list):
+        # 리스트의 각 요소를 문자열로 변환하고 토큰화
+        return [token.form for item in text for token in kiwi_tokenizer.tokenize(str(item))]
+    else:
+        # 문자열인 경우 직접 토큰화
+        return [token.form for token in kiwi_tokenizer.tokenize(text)]
+
+def default_preprocessing_func(text: str) -> List[str]:
+    return text.split()
+
+from tqdm import tqdm  # tqdm 추가
+
+class KiwiBM25Retriever(BaseRetriever):
+    """`BM25` retriever without Elasticsearch."""
+
+    vectorizer: Any
+    """ BM25 vectorizer."""
+    docs: List[Document] = Field(repr=False)
+    """ List of documents."""
+    k: int = 4
+    """ Number of documents to return."""
+    preprocess_func: Callable[[str], List[str]] = kiwi_preprocessing_func
+    """ Preprocessing function to use on the text before BM25 vectorization."""
+
+    class Config:
+        """Configuration for this pydantic object."""
+        arbitrary_types_allowed = True
+
+    @classmethod
+    def from_texts(
+        cls,
+        texts: Iterable[str],
+        metadatas: Optional[Iterable[dict]] = None,
+        bm25_params: Optional[Dict[str, Any]] = None,
+        preprocess_func: Callable[[str], List[str]] = kiwi_preprocessing_func,
+        **kwargs: Any,
+    ) -> "KiwiBM25Retriever":
+        try:
+            from rank_bm25 import BM25Okapi
+        except ImportError:
+            raise ImportError(
+                "Could not import rank_bm25, please install with `pip install rank_bm25`."
+            )
+
+        texts_processed = [preprocess_func(t) for t in tqdm(texts, desc="텍스트 처리 중")]
+        bm25_params = bm25_params or {}
+        vectorizer = BM25Okapi(texts_processed, **bm25_params)
+        metadatas = metadatas or ({} for _ in texts)
+        docs = [Document(page_content=t, metadata=m) for t, m in zip(texts, metadatas)]
+        return cls(
+            vectorizer=vectorizer, docs=docs, preprocess_func=preprocess_func, **kwargs
+        )
+
+    @classmethod
+    def from_documents(
+        cls,
+        documents: Iterable[Document],
+        *,
+        bm25_params: Optional[Dict[str, Any]] = None,
+        preprocess_func: Callable[[str], List[str]] = kiwi_preprocessing_func,
+        **kwargs: Any,
+    ) -> "KiwiBM25Retriever":
+        texts, metadatas = zip(*((d.page_content, d.metadata) for d in documents))
+        return cls.from_texts(
+            texts=texts,
+            bm25_params=bm25_params,
+            metadatas=metadatas,
+            preprocess_func=preprocess_func,
+            **kwargs,
+        )
+
+    def save_local(self, folder_path: str, index_name: str) -> None:
+        """벡터라이저와 문서를 각각 별도의 파일로 저장합니다."""
+        import time
+        start_time = time.time()  # 시간 측정 시작
+        os.makedirs(folder_path, exist_ok=True)
+        
+        # 벡터라이저 저장
+        with open(os.path.join(folder_path, f"{index_name}_vectorizer.pkl"), 'wb') as f:
+            pickle.dump(self.vectorizer, f)
+        
+        # 문서 데이터 저장
+        with open(os.path.join(folder_path, f"{index_name}_docs.pkl"), 'wb') as f:
+            pickle.dump(self.docs, f)
+
+        end_time = time.time()  # 시간 측정 종료
+        print(f"save_local 시간: {end_time - start_time:.2f}초")  # 시간 출력
+
+    @classmethod
+    def load_local(cls, folder_path: str, index_name: str, **kwargs) -> "KiwiBM25Retriever":
+        """저장된 벡터라이저와 문서를 각각 불러옵니다."""
+        import time
+        start_time = time.time()  # 시간 측정 시작
+        
+        # 벡터라이저 로드
+        with open(os.path.join(folder_path, f"{index_name}_vectorizer.pkl"), 'rb') as f:
+            vectorizer = pickle.load(f)
+        
+        # 문서 데이터 로드
+        with open(os.path.join(folder_path, f"{index_name}_docs.pkl"), 'rb') as f:
+            docs = pickle.load(f)
+        
+        end_time = time.time()  # 시간 측정 종료
+        print(f"load_local 시간: {end_time - start_time:.2f}초")  # 시간 출력
+        
+        return cls(vectorizer=vectorizer, docs=docs, **kwargs)
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        processed_query = self.preprocess_func(query)
+        return_docs = self.vectorizer.get_top_n(processed_query, self.docs, n=self.k)
+        return return_docs
+
+    @staticmethod
+    def softmax(x):
+        """Compute softmax values for each sets of scores in x."""
+        e_x = np.exp(x - np.max(x))
+        return e_x / e_x.sum(axis=0)
+
+    @staticmethod
+    def argsort(seq, reverse):
+        return sorted(range(len(seq)), key=seq.__getitem__, reverse=reverse)
+
+    def search_with_score(self, query: str, top_k=None):
+        import time
+        start_time = time.time()  # 시간 측정 시작
+
+        normalized_score = self.softmax(
+            self.vectorizer.get_scores(self.preprocess_func(query))
+        )
+
+        if top_k is None:
+            top_k = self.k
+
+        score_indexes = self.argsort(normalized_score, True)
+
+        docs_with_scores = []
+        for i, doc in tqdm(enumerate(self.docs), desc="문서 점수 계산 중"):
+            document = Document(
+                page_content=doc.page_content, metadata={"score": normalized_score[i]}
+            )
+            docs_with_scores.append(document)
+
+        score_indexes = score_indexes[:top_k]
+        getter = itemgetter(*score_indexes)
+        selected_elements = getter(docs_with_scores)
+
+        end_time = time.time()  # 시간 측정 종료
+        print(f"search_with_score 시간: {end_time - start_time:.2f}초")  # 시간 출력
+
+        return selected_elements
+
 class RoutineStep(BaseModel):
     """루틴의 세부 단계"""
-    title: str = Field(description="루틴 단계의 제목")
-    steps: List[str] = Field(description="세부 실천 단계들")
-    duration: str = Field(description="예상 소요 시간")
-    difficulty: str = Field(description="난이도 (상/중/하)")
-    category: str = Field(description="카테고리 (운동/식단/학습/취미/생활/기타)")
+    title: str = Field(default="", description="루틴 단계의 제목")
+    details: List[str] = Field(default=[], description="세부 실천 단계들")
+    duration: str = Field(default="0분", description="예상 소요 시간")
+    difficulty: str = Field(default="중", description="난이도 (상/중/하)")
+    category: str = Field(default="기타", description="카테고리 (운동/식단/학습/취미/생활/기타)")
+    tips: str = Field(default="", description="실천을 위한 조언이나 팁")
 
 class RoutineResponse(BaseModel):
     """AI 코치의 맞춤형 루틴 응답"""
@@ -95,20 +270,32 @@ class RetrievalChain(ABC):
 
     
 
-    def create_retriever(self, split_docs, category=None, mode='dense'):
-        # 입력된 mode에 따라 리트리버를 생성합니다.
+    def create_retriever(self, split_docs, category=None, mode='dense', cache_dir="./cache"):
         if mode == 'dense':
             dense_retriever = self.vectorstore.as_retriever(
                 search_type="similarity", search_kwargs={"k": self.k, "filter": {"category": category}}
             )
             return dense_retriever
         elif mode == 'kiwi':
-            from langchain_teddynote.retrievers import KiwiBM25Retriever
-            # split_docs가 문서 리스트인지 확인
-            if isinstance(split_docs, list):
-                kiwi = KiwiBM25Retriever.from_documents(documents=split_docs)
-            else:
-                raise TypeError("split_docs는 문서 리스트여야 합니다.")
+            cache_path = os.path.join(cache_dir, f"kiwi_bm25_{category}")
+            
+            # 캐시된 인덱스가 있는지 확인
+            if os.path.exists(f"{cache_path}.pkl"):
+                try:
+                    return KiwiBM25Retriever.load_local(cache_dir, f"kiwi_bm25_{category}")
+                except Exception as e:
+                    print(f"캐시된 인덱스 로드 실패: {e}")
+            
+            # 캐시가 없거나 로드 실패시 새로 생성
+            kiwi = KiwiBM25Retriever.from_documents(documents=split_docs)
+            
+            # 새로 생성한 인덱스 저장
+            os.makedirs(cache_dir, exist_ok=True)
+            try:
+                kiwi.save_local(cache_dir, f"kiwi_bm25_{category}")
+            except Exception as e:
+                print(f"인덱스 저장 실패: {e}")
+                
             return kiwi
         else:
             raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하세요.")
