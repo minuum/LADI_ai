@@ -347,9 +347,13 @@ class RetrievalChain(ABC):
         else:
             raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하세요.")
 
-    def create_model(self):
-        model = ChatOpenAI(model_name="gpt-4o-2024-08-06", temperature=0)
-        return model.with_structured_output(RoutineResponse)
+    def create_model(self,func="makeaction"):
+        if func == "makeaction":
+            model = ChatOpenAI(model_name="gpt-4o-2024-08-06", temperature=0)
+            return model.with_structured_output(ActionResponse)
+        elif func == "makeroutine":
+            model = ChatOpenAI(model_name="gpt-4o-2024-08-06", temperature=0)
+            return model.with_structured_output(RoutineResponse)
 
     def create_prompt(self,prompt_name="makeaction"):
         return hub.pull(f"minuum/ladi-{prompt_name}")
@@ -391,6 +395,7 @@ class RetrievalChain(ABC):
                 | prompt
                 | model
             )
+            return self
 
         if func == "makeroutine":
             docs = self.load_documents(self.source_uri)
@@ -398,7 +403,7 @@ class RetrievalChain(ABC):
             split_docs = self.split_documents(docs, text_splitter,local_db=local_db)
             self.vectorstore = self.create_vectorstore(split_docs, cache_mode=cache_mode, local_db=local_db)
             self.retriever = self.create_retriever(split_docs, category=category, mode=mode)
-            model = self.create_model()
+            model = self.create_model(func=func)
             prompt = self.create_prompt(prompt_name=func)
         
 
