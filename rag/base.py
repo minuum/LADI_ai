@@ -266,6 +266,8 @@ class RetrievalChain(ABC):
         대화 데이터의 경우 이미 적절한 단위로 구성되어 있으므로,
         단순히 Document 객체로 변환만 수행합니다.
         """
+        if docs == ["pass"]:
+            return docs
         if local_db == "./cached_healthcare/":
             documents=[]
             for data in docs:
@@ -292,6 +294,8 @@ class RetrievalChain(ABC):
 
 
     def create_vectorstore(self, split_docs, cache_mode='load', local_db="./cache/",mode='dense'):
+        if split_docs == ["pass"]:
+            cache_mode = "load"
         if cache_mode == 'store':
             print("로컬에 새로운 벡터 저장소를 생성중")
             fs = LocalFileStore(local_db)
@@ -365,6 +369,7 @@ class RetrievalChain(ABC):
     def create_chain(self, cache_mode='load', local_db="./cache/", category=None, mode='dense',func="makeaction"):
 
         if func == "makeaction":
+            print("makeaction 체인 생성 중")
             docs = self.load_documents(self.source_uri)
             text_splitter = self.create_text_splitter()
             split_docs = self.split_documents(docs, text_splitter,local_db=local_db)
@@ -398,6 +403,7 @@ class RetrievalChain(ABC):
             return self
 
         if func == "makeroutine":
+            print("makeroutine 체인 생성 중")
             docs = self.load_documents(self.source_uri)
             text_splitter = self.create_text_splitter()
             split_docs = self.split_documents(docs, text_splitter,local_db=local_db)

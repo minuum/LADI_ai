@@ -10,6 +10,8 @@ class JSONRetrievalChain(RetrievalChain):
         self.k = 5
         self.docs = docs
     def load_documents(self, source_uris: List[str]):
+        if self.source_uri == ["pass"]:
+            return self.source_uri
         if self.docs is None:
             self.docs = []
             for source_uri in source_uris:
@@ -18,4 +20,6 @@ class JSONRetrievalChain(RetrievalChain):
         return self.docs
 
     def create_text_splitter(self):
+        if self.source_uri == ["pass"]:
+            return self.source_uri
         return RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
