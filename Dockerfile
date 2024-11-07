@@ -23,7 +23,7 @@ COPY .env ./
 COPY main.py ./
 COPY rag/ ./rag/
 COPY ./data/healthcare_data_ladi ./data/healthcare_data_ladi
-
+COPY cache ./cache
 # Poetry 설정 및 의존성 설치
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi
