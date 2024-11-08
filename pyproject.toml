@@ -97,6 +97,7 @@ pinecone-text = "^0.9.0"
 flask = "^3.0.3"
 jq = "^1.8.0"
 django = "^5.1.2"
+numpy = "<2"
 
 
 [tool.poetry.group.dev.dependencies]
