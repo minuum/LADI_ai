@@ -165,7 +165,10 @@ cython_debug/
 
 #data
 data/
-
+cached_TL_family_housing and social/
+cached_healthcare/
+structured_datas/
+.DS_Store
 ### Python Patch ###
 # Poetry local configuration file - https://python-poetry.org/docs/configuration/#local-configuration
 poetry.toml
@@ -178,3 +181,10 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python
 
+cached_TL_family_housing and social/
+cached_healthcare/
+structured_datas/
+.DS_Store
+
+1234
+1234.pub
