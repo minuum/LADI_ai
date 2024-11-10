@@ -1,15 +1,17 @@
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
-from rag.base import RetrievalChain 
+from rag.base import RetrievalChain
 from rag.json import JSONRetrievalChain
 import requests
 import uvicorn
 
 app = FastAPI()
+
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import CrossEncoderReranker
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
 model = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-v2-m3")
 
 # 상위 3개의 문서 선택
@@ -17,7 +19,7 @@ compressor = CrossEncoderReranker(model=model, top_n=3)
 
 class UserInfo(BaseModel):
     user_id: int
-    name: str 
+    name: str
     age: int
     height: float
     weight: float
@@ -43,8 +45,14 @@ class ActionResponse(BaseModel):
 
 # RAG 체인을 애플리케이션 시작 시 한 번만 초기화
 def initialize_rag_chain(func_name):
-    chain = JSONRetrievalChain(source_uri=["pass"], docs=["pass"])
-    chain = chain.create_chain(cache_mode='load', local_db="./cached_healthcare/", category="의료", mode='kiwi', func=func_name)
+    chain = JSONRetrievalChain(source_uri=["pass"])  # source_uri는 선택적 파라미터로 변경됨
+    chain = chain.create_chain(
+        cache_mode='load',
+        local_db="./cached_healthcare/",
+        category="의료",
+        mode='hybrid',
+        func=func_name
+    )
     retriever = chain.retriever
     rag = chain.chain
     return chain, retriever, rag
@@ -61,10 +69,10 @@ async def make_action(
     try:
         # make_action_query 구성
         make_action_query = {
-            "context": rag_retriever_makeaction,
+            "context": None,  # context는 chain 내부에서 처리하므로 None으로 설정
             "question": habit_info.goal,
             "user_id": user_info.user_id,
-            "name": user_info.name, 
+            "name": user_info.name,
             "age": user_info.age,
             "height": user_info.height,
             "weight": user_info.weight,
@@ -76,18 +84,16 @@ async def make_action(
             "goal": habit_info.goal
         }
 
-        # rag_retriever를 내부적으로 사용
+        # rag_makeaction을 통해 결과 얻기
         result = rag_makeaction.invoke(make_action_query)
-        
+
         # 결과를 actions_dict 형태로 변환
         actions_dict = {
-            "actions": [result.actions[i].action for i in range(len(result.actions))]
+            "actions": [action.action for action in result.actions]
         }
-        # context만 제외시키는 코드
-        make_action_query.pop("context")
-        # 응답 데이터 생성 (context 제외)
+        # 응답 데이터 생성
         response_data = {**make_action_query, **actions_dict}
-        
+
         return response_data
 
     except Exception as e:
@@ -99,16 +105,9 @@ async def make_routine(
     routine_info: RoutineInfo
 ):
     try:
-        # compression_retriever 초기화 (rag_retriever_makeroutine 사용)
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=rag_retriever_makeroutine)
-        
-        # 필요한 문서 검색
-        compressed_docs = compression_retriever.invoke(make_action_result_query["goal"])
-        
-        # make_routine_query 구성 (context에 직렬화 가능한 데이터만 포함)
+        # make_routine_query 구성
         make_routine_query = {
-            "context": compressed_docs,  # 직렬화 가능한 형태로 변환
+            "context": None,  # context는 chain 내부에서 처리하므로 None으로 설정
             "question": make_action_result_query["goal"],
             "user_id": make_action_result_query["user_id"],
             "name": make_action_result_query["name"],
@@ -126,8 +125,9 @@ async def make_routine(
             "repeat_days": routine_info.repeat_days
         }
 
+        # rag_makeroutine을 통해 결과 얻기
         result = rag_makeroutine.invoke(make_routine_query)
-        
+
         subroutine_dict = {
             "subroutines": [
                 {

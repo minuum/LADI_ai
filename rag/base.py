@@ -240,12 +240,52 @@ class RoutineResponse(BaseModel):
     subRoutine: List[RoutineSubStep] = Field(description="루틴의 각 단계 정보")
 
 #==========================================================
-# 체인 정보
+# 하이브리드 리트리버
+class HybridRetriever(BaseRetriever):
+    """Hybrid retriever that combines dense and sparse retrievers."""
+    
+    dense_retriever: Any = Field(description="Dense retriever")
+    sparse_retriever: Any = Field(description="Sparse retriever")
+    k: int = Field(default=4, description="Number of documents to return")
 
+    class Config:
+        """Configuration for this pydantic object."""
+        arbitrary_types_allowed = True
+
+    def __init__(self, dense_retriever, sparse_retriever, k=4):
+        super().__init__()
+        self.dense_retriever = dense_retriever
+        self.sparse_retriever = sparse_retriever
+        self.k = k
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        """Get relevant documents from both retrievers and combine results."""
+        # Get results from both retrievers
+        dense_docs = self.dense_retriever.get_relevant_documents(query)
+        sparse_docs = self.sparse_retriever.get_relevant_documents(query)
+
+        # Combine and deduplicate results
+        seen_contents = set()
+        hybrid_docs = []
+        
+        for doc in dense_docs + sparse_docs:
+            if doc.page_content not in seen_contents:
+                seen_contents.add(doc.page_content)
+                hybrid_docs.append(doc)
+                if len(hybrid_docs) >= self.k:
+                    break
+
+        return hybrid_docs[:self.k]
+
+#==========================================================
+# 체인 정보
 class RetrievalChain(ABC):
     def __init__(self):
         self.source_uri = None
         self.k = 20
+        self.vectorstore = None
 
     @abstractmethod
     def load_documents(self, source_uris):
@@ -317,39 +357,91 @@ class RetrievalChain(ABC):
                 documents=split_docs, embedding=self.create_embedding()
             )
 
-    
-
     def create_retriever(self, split_docs, category=None, mode='dense', cache_dir="cache"):
         if mode == 'dense':
             dense_retriever = self.vectorstore.as_retriever(
-                search_type="similarity", search_kwargs={"k": self.k, "filter": {"category": category}}
+                search_type="similarity", search_kwargs={"k": self.k}
             )
             return dense_retriever
         elif mode == 'kiwi':
+            # KiwiBM25Retriever 생성 코드 (기존 코드 유지)
             cache_path = os.path.join(cache_dir, f"kiwi_bm25_{category}")
             print(f"kiwi_bm25_{category} 캐시 경로: {cache_path}")
-            # 캐시된 인덱스가 있는지 확인
+            # 캐시된 인덱스 로드 또는 생성
             if os.path.exists(f"{cache_path}_vectorizer.pkl") and os.path.exists(f"{cache_path}_docs.pkl"):
                 try:
                     print(f"{cache_path} 로드 중")
-                    return KiwiBM25Retriever.load_local(cache_dir, f"kiwi_bm25_{category}")
+                    kiwi_retriever = KiwiBM25Retriever.load_local(cache_dir, f"kiwi_bm25_{category}")
                 except Exception as e:
                     print(f"캐시된 인덱스 로드 실패: {e}")
-            
-            # 캐시가 없거나 로드 실패시 새로 생성
-            kiwi = KiwiBM25Retriever.from_documents(documents=split_docs)
-            
-            # 새로 생성한 인덱스 저장
-            os.makedirs(cache_dir, exist_ok=True)
-            try:
-                print(f"{cache_path} 저장 중")
-                kiwi.save_local(cache_dir, f"kiwi_bm25_{category}")
-            except Exception as e:
-                print(f"인덱스 저장 실패: {e}")
-                
-            return kiwi
+            else:
+                kiwi_retriever = KiwiBM25Retriever.from_documents(documents=split_docs)
+                os.makedirs(cache_dir, exist_ok=True)
+                try:
+                    print(f"{cache_path} 저장 중")
+                    kiwi_retriever.save_local(cache_dir, f"kiwi_bm25_{category}")
+                except Exception as e:
+                    print(f"인덱스 저장 실패: {e}")
+            return kiwi_retriever
+        elif mode == 'hybrid':
+            # FAISS 리트리버 생성
+            dense_retriever = self.vectorstore.as_retriever(
+                search_type="similarity", search_kwargs={"k": self.k}
+            )
+            # KiwiBM25Retriever 생성 (위와 동일)
+            cache_path = os.path.join(cache_dir, f"kiwi_bm25_{category}")
+            print(f"kiwi_bm25_{category} 캐시 경로: {cache_path}")
+            if os.path.exists(f"{cache_path}_vectorizer.pkl") and os.path.exists(f"{cache_path}_docs.pkl"):
+                try:
+                    print(f"{cache_path} 로드 중")
+                    kiwi_retriever = KiwiBM25Retriever.load_local(cache_dir, f"kiwi_bm25_{category}")
+                except Exception as e:
+                    print(f"캐시된 인덱스 로드 실패: {e}")
+            else:
+                kiwi_retriever = KiwiBM25Retriever.from_documents(documents=split_docs)
+                os.makedirs(cache_dir, exist_ok=True)
+                try:
+                    print(f"{cache_path} 저장 중")
+                    kiwi_retriever.save_local(cache_dir, f"kiwi_bm25_{category}")
+                except Exception as e:
+                    print(f"인덱스 저장 실패: {e}")
+            # HybridRetriever 생성
+            hybrid_retriever = HybridRetriever(dense_retriever, kiwi_retriever, k=self.k)
+            return hybrid_retriever
         else:
-            raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하세요.")
+            raise ValueError("지원하지 않는 모드입니다. 'dense', 'kiwi', 또는 'hybrid'를 선택하세요.")    
+
+    # def create_retriever(self, split_docs, category=None, mode='dense', cache_dir="cache"):
+    #     if mode == 'dense':
+    #         dense_retriever = self.vectorstore.as_retriever(
+    #             search_type="similarity", search_kwargs={"k": self.k, "filter": {"category": category}}
+    #         )
+    #         return dense_retriever
+    #     elif mode == 'kiwi':
+    #         cache_path = os.path.join(cache_dir, f"kiwi_bm25_{category}")
+    #         print(f"kiwi_bm25_{category} 캐시 경로: {cache_path}")
+    #         # 캐시된 인덱스가 있는지 확인
+    #         if os.path.exists(f"{cache_path}_vectorizer.pkl") and os.path.exists(f"{cache_path}_docs.pkl"):
+    #             try:
+    #                 print(f"{cache_path} 로드 중")
+    #                 return KiwiBM25Retriever.load_local(cache_dir, f"kiwi_bm25_{category}")
+    #             except Exception as e:
+    #                 print(f"캐시된 인덱스 로드 실패: {e}")
+            
+    #         # 캐시가 없거나 로드 실패시 새로 생성
+    #         kiwi = KiwiBM25Retriever.from_documents(documents=split_docs)
+            
+        #     # 새로 생성한 인덱스 저장
+        #     os.makedirs(cache_dir, exist_ok=True)
+        #     try:
+        #         print(f"{cache_path} 저장 중")
+        #         kiwi.save_local(cache_dir, f"kiwi_bm25_{category}")
+        #     except Exception as e:
+        #         print(f"인덱스 저장 실패: {e}")
+                
+        #     return kiwi
+        # else:
+        #     raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하세요.")
 
     def create_model(self,func="makeaction"):
         if func == "makeaction":
@@ -366,76 +458,72 @@ class RetrievalChain(ABC):
     def format_docs(docs):
         return "\n".join(docs)
 
-    def create_chain(self, cache_mode='load', local_db="./cache/", category=None, mode='dense',func="makeaction"):
+def create_chain(self, cache_mode='load', local_db="./cache/", category=None, mode='dense', func="makeaction"):
 
-        if func == "makeaction":
-            print("makeaction 체인 생성 중")
-            docs = self.load_documents(self.source_uri)
-            text_splitter = self.create_text_splitter()
-            split_docs = self.split_documents(docs, text_splitter,local_db=local_db)
-            self.vectorstore = self.create_vectorstore(split_docs, cache_mode=cache_mode, local_db=local_db)
-            self.retriever = self.create_retriever(split_docs, category=category, mode=mode)
-            model = self.create_model()
-            prompt = self.create_prompt(prompt_name=func)
-        
-
+    if func == "makeaction":
+        print("makeaction 체인 생성 중")
+        docs = self.load_documents(self.source_uri)
+        text_splitter = self.create_text_splitter()
+        split_docs = self.split_documents(docs, text_splitter, local_db=local_db)
+        self.vectorstore = self.create_vectorstore(split_docs, cache_mode=cache_mode, local_db=local_db)
+        self.retriever = self.create_retriever(split_docs, category=category, mode=mode)
+        model = self.create_model()
+        prompt = self.create_prompt(prompt_name=func)
 
         # structured output을 위한 체인 구성
-            self.chain = (
-                {
-                    "context": itemgetter("context"),
-                    "question": itemgetter("goal"),
-                    "user_id": itemgetter("user_id"),
-                    "name": itemgetter("name"),
-                    "age": itemgetter("age"),
-                    "gender": itemgetter("gender"),
-                    "job": itemgetter("job"),
-                    "weight": itemgetter("weight"),
-                    "height": itemgetter("height"),
-                    "workout_frequency": itemgetter("workout_frequency"),
-                    "workout_location": itemgetter("workout_location"),
-                    "category": itemgetter("category"),
-                    "goal": itemgetter("goal")
-                }
-                | prompt
-                | model
-            )
-            return self
-
-        if func == "makeroutine":
-            print("makeroutine 체인 생성 중")
-            docs = self.load_documents(self.source_uri)
-            text_splitter = self.create_text_splitter()
-            split_docs = self.split_documents(docs, text_splitter,local_db=local_db)
-            self.vectorstore = self.create_vectorstore(split_docs, cache_mode=cache_mode, local_db=local_db)
-            self.retriever = self.create_retriever(split_docs, category=category, mode=mode)
-            model = self.create_model(func=func)
-            prompt = self.create_prompt(prompt_name=func)
-        
-
-
-            # structured output을 위한 체인 구성
-            self.chain = (
-                {
-                    "context": itemgetter("context"),
-                    "question": itemgetter("goal"),
-                    "user_id": itemgetter("user_id"),
-                    "name": itemgetter("name"),
-                    "age": itemgetter("age"),
-                    "gender": itemgetter("gender"),
-                    "job": itemgetter("job"),
-                    "weight": itemgetter("weight"),
-                    "height": itemgetter("height"),
-                    "workout_frequency": itemgetter("workout_frequency"),
-                    "workout_location": itemgetter("workout_location"),
-                    "category": itemgetter("category"),
-                    "goal": itemgetter("goal"),
-                    "selected_actions": itemgetter("selected_actions"),
-                    "start_time": itemgetter("start_time"),
-                    "repeat_days": itemgetter("repeat_days"),
-                }
-                | prompt
-                | model
-            )
+        self.chain = (
+            {
+                "context": self.retriever,
+                "question": itemgetter("goal"),
+                "user_id": itemgetter("user_id"),
+                "name": itemgetter("name"),
+                "age": itemgetter("age"),
+                "gender": itemgetter("gender"),
+                "job": itemgetter("job"),
+                "weight": itemgetter("weight"),
+                "height": itemgetter("height"),
+                "workout_frequency": itemgetter("workout_frequency"),
+                "workout_location": itemgetter("workout_location"),
+                "category": itemgetter("category"),
+                "goal": itemgetter("goal")
+            }
+            | prompt
+            | model
+        )
         return self
-    
+
+    # makeroutine에 대한 처리도 동일하게 적용
+    if func == "makeroutine":
+        print("makeroutine 체인 생성 중")
+        docs = self.load_documents(self.source_uri)
+        text_splitter = self.create_text_splitter()
+        split_docs = self.split_documents(docs, text_splitter, local_db=local_db)
+        self.vectorstore = self.create_vectorstore(split_docs, cache_mode=cache_mode, local_db=local_db)
+        self.retriever = self.create_retriever(split_docs, category=category, mode=mode)
+        model = self.create_model(func=func)
+        prompt = self.create_prompt(prompt_name=func)
+
+        # structured output을 위한 체인 구성
+        self.chain = (
+            {
+                "context": self.retriever,
+                "question": itemgetter("goal"),
+                "user_id": itemgetter("user_id"),
+                "name": itemgetter("name"),
+                "age": itemgetter("age"),
+                "gender": itemgetter("gender"),
+                "job": itemgetter("job"),
+                "weight": itemgetter("weight"),
+                "height": itemgetter("height"),
+                "workout_frequency": itemgetter("workout_frequency"),
+                "workout_location": itemgetter("workout_location"),
+                "category": itemgetter("category"),
+                "goal": itemgetter("goal"),
+                "selected_actions": itemgetter("selected_actions"),
+                "start_time": itemgetter("start_time"),
+                "repeat_days": itemgetter("repeat_days"),
+            }
+            | prompt
+            | model
+        )
+        return self
