@@ -25,7 +25,10 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.pydantic_v1 import Field
 from langchain_core.retrievers import BaseRetriever
+from dotenv import load_dotenv
+load_dotenv()
 
+UPSTAGE_API_KEY=os.getenv("UPSTAGE_API_KEY")
 try:
     from kiwipiepy import Kiwi
 except ImportError:
