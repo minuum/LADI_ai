@@ -242,60 +242,56 @@ class RoutineResponse(BaseModel):
 #==========================================================
 # 하이브리드 리트리버
 class HybridRetriever(BaseRetriever):
-    """Hybrid retriever that combines dense and sparse retrievers."""
+    """Hybrid retriever that combines dense and sparse retrievers with weights."""
     
     dense_retriever: Any = Field(description="Dense retriever")
     sparse_retriever: Any = Field(description="Sparse retriever")
     k: int = Field(default=20, description="Number of documents to return")
+    dense_weight: float = Field(default=0.3, description="Weight for dense retriever scores")
+    sparse_weight: float = Field(default=0.7, description="Weight for sparse retriever scores")
 
     class Config:
         """Configuration for this pydantic object."""
         arbitrary_types_allowed = True
 
-    def __init__(self, dense_retriever, sparse_retriever, k=20):
+    def __init__(self, dense_retriever, sparse_retriever, k=20, dense_weight=0.3, sparse_weight=0.7):
         super().__init__()
         self.dense_retriever = dense_retriever
         self.sparse_retriever = sparse_retriever
         self.k = k
+        self.dense_weight = dense_weight
+        self.sparse_weight = sparse_weight
 
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> List[Document]:
-        """Get relevant documents from both retrievers and combine results."""
-        # 각 리트리버에서 k개의 문서를 가져옴
+        """Get relevant documents from both retrievers and combine results with weights."""
+        # 각 리트리버에서 문서와 점수를 가져옴
         dense_docs = self.dense_retriever.get_relevant_documents(query)
         sparse_docs = self.sparse_retriever.get_relevant_documents(query)
 
-        # Combine and deduplicate results
-        seen_contents = set()
-        hybrid_docs = []
-        
-        # dense_docs와 sparse_docs를 번갈아가며 추가
-        dense_idx = 0
-        sparse_idx = 0
-        
-        while len(hybrid_docs) < self.k and (dense_idx < len(dense_docs) or sparse_idx < len(sparse_docs)):
-            # dense_docs에서 추가
-            if dense_idx < len(dense_docs):
-                doc = dense_docs[dense_idx]
-                if doc.page_content not in seen_contents:
-                    seen_contents.add(doc.page_content)
-                    hybrid_docs.append(doc)
-                dense_idx += 1
-            
-            # k개를 채웠다면 종료
-            if len(hybrid_docs) >= self.k:
-                break
-                
-            # sparse_docs에서 추가
-            if sparse_idx < len(sparse_docs):
-                doc = sparse_docs[sparse_idx]
-                if doc.page_content not in seen_contents:
-                    seen_contents.add(doc.page_content)
-                    hybrid_docs.append(doc)
-                sparse_idx += 1
+        # 문서와 가중치가 적용된 점수를 저장할 딕셔너리
+        doc_scores = {}
 
-        return hybrid_docs[:self.k]
+        # Dense 검색 결과에 가중치 적용
+        for i, doc in enumerate(dense_docs):
+            score = (len(dense_docs) - i) / len(dense_docs) * self.dense_weight
+            if doc.page_content in doc_scores:
+                doc_scores[doc.page_content] = (doc, doc_scores[doc.page_content][1] + score)
+            else:
+                doc_scores[doc.page_content] = (doc, score)
+
+        # Sparse 검색 결과에 가중치 적용
+        for i, doc in enumerate(sparse_docs):
+            score = (len(sparse_docs) - i) / len(sparse_docs) * self.sparse_weight
+            if doc.page_content in doc_scores:
+                doc_scores[doc.page_content] = (doc, doc_scores[doc.page_content][1] + score)
+            else:
+                doc_scores[doc.page_content] = (doc, score)
+
+        # 점수에 따라 정렬하고 상위 k개 선택
+        sorted_docs = sorted(doc_scores.values(), key=lambda x: x[1], reverse=True)
+        return [doc for doc, _ in sorted_docs[:self.k]]
 
 #==========================================================
 # 체인 정보
@@ -459,7 +455,7 @@ class RetrievalChain(ABC):
                 
         #     return kiwi
         # else:
-        #     raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하���요.")
+        #     raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하요.")
 
     def create_model(self,func="makeaction"):
         if func == "makeaction":
