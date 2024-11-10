@@ -45,7 +45,7 @@ class ActionResponse(BaseModel):
 
 # RAG 체인을 애플리케이션 시작 시 한 번만 초기화
 def initialize_rag_chain(func_name):
-    chain = JSONRetrievalChain(source_uri=["pass"])  # source_uri는 선택적 파라미터로 변경됨
+    chain = JSONRetrievalChain(source_uri=["pass"])
     chain = chain.create_chain(
         cache_mode='load',
         local_db="./cached_healthcare/",
@@ -53,9 +53,19 @@ def initialize_rag_chain(func_name):
         mode='hybrid',
         func=func_name
     )
-    retriever = chain.retriever
+    
+    # 기본 retriever를 compression retriever로 감싸기
+    base_retriever = chain.retriever
+    compression_retriever = ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=base_retriever
+    )
+    
+    # 압축된 retriever로 교체
+    chain.retriever = compression_retriever
     rag = chain.chain
-    return chain, retriever, rag
+    
+    return chain, compression_retriever, rag
 
 # 각 기능에 대한 RAG 체인 초기화
 rag_chain_makeaction, rag_retriever_makeaction, rag_makeaction = initialize_rag_chain('makeaction')

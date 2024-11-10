@@ -246,13 +246,13 @@ class HybridRetriever(BaseRetriever):
     
     dense_retriever: Any = Field(description="Dense retriever")
     sparse_retriever: Any = Field(description="Sparse retriever")
-    k: int = Field(default=4, description="Number of documents to return")
+    k: int = Field(default=20, description="Number of documents to return")
 
     class Config:
         """Configuration for this pydantic object."""
         arbitrary_types_allowed = True
 
-    def __init__(self, dense_retriever, sparse_retriever, k=4):
+    def __init__(self, dense_retriever, sparse_retriever, k=20):
         super().__init__()
         self.dense_retriever = dense_retriever
         self.sparse_retriever = sparse_retriever
@@ -262,7 +262,7 @@ class HybridRetriever(BaseRetriever):
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> List[Document]:
         """Get relevant documents from both retrievers and combine results."""
-        # Get results from both retrievers
+        # 각 리트리버에서 k개의 문서를 가져옴
         dense_docs = self.dense_retriever.get_relevant_documents(query)
         sparse_docs = self.sparse_retriever.get_relevant_documents(query)
 
@@ -270,12 +270,30 @@ class HybridRetriever(BaseRetriever):
         seen_contents = set()
         hybrid_docs = []
         
-        for doc in dense_docs + sparse_docs:
-            if doc.page_content not in seen_contents:
-                seen_contents.add(doc.page_content)
-                hybrid_docs.append(doc)
-                if len(hybrid_docs) >= self.k:
-                    break
+        # dense_docs와 sparse_docs를 번갈아가며 추가
+        dense_idx = 0
+        sparse_idx = 0
+        
+        while len(hybrid_docs) < self.k and (dense_idx < len(dense_docs) or sparse_idx < len(sparse_docs)):
+            # dense_docs에서 추가
+            if dense_idx < len(dense_docs):
+                doc = dense_docs[dense_idx]
+                if doc.page_content not in seen_contents:
+                    seen_contents.add(doc.page_content)
+                    hybrid_docs.append(doc)
+                dense_idx += 1
+            
+            # k개를 채웠다면 종료
+            if len(hybrid_docs) >= self.k:
+                break
+                
+            # sparse_docs에서 추가
+            if sparse_idx < len(sparse_docs):
+                doc = sparse_docs[sparse_idx]
+                if doc.page_content not in seen_contents:
+                    seen_contents.add(doc.page_content)
+                    hybrid_docs.append(doc)
+                sparse_idx += 1
 
         return hybrid_docs[:self.k]
 
@@ -441,7 +459,7 @@ class RetrievalChain(ABC):
                 
         #     return kiwi
         # else:
-        #     raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하세요.")
+        #     raise ValueError("지원하지 않는 모드입니다. 'dense' 또는 'kiwi'를 선택하���요.")
 
     def create_model(self,func="makeaction"):
         if func == "makeaction":
